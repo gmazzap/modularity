@@ -625,4 +625,87 @@ class PackageTest extends TestCase
 
         static::assertFalse($package1->connect($package1));
     }
+
+    /**
+     * Test service listener can do action on service registration checking conditions.
+     *
+     * @test
+     */
+    public function testServiceListenerCanReactOnServices(): void
+    {
+        $moduleCore = $this->mockModule('core', ServiceModule::class);
+        $moduleCore->expects('services')->andReturn($this->stubServices('core.1', 'core.2'));
+
+        $moduleExt1 = $this->mockModule('extOne', ServiceModule::class);
+        $moduleExt1->expects('services')->andReturn($this->stubServices('ext.1', 'core.1'));
+
+        $moduleExt2 = $this->mockModule('extTwo', ServiceModule::class);
+        $moduleExt2->expects('services')->andReturn($this->stubServices('ext.2', 'ext.1'));
+
+        $moduleExt3 = $this->mockModule('extThree', ExtendingModule::class);
+        $moduleExt3->expects('extensions')->andReturn($this->stubServices('core.2', 'ext.2'));
+
+        $listener = static function (
+            string $serviceId,
+            string $module,
+            Properties $properties,
+            string $type
+        ): bool {
+
+            static $done = [];
+            if (
+                isset($done[$serviceId])
+                && (strpos($serviceId, 'core.') === 0)
+                && ($type !== Package::MODULE_EXTENDED)
+            ) {
+                do_action('service.overridden', $serviceId, $module);
+            }
+
+            $done[$serviceId] = 1;
+
+            return true;
+        };
+
+        // "core.1" and "ext.1" are both overridden, but we only target core services.
+        // "core.2" and "ext.2" are both extended, but we don't target extensions.
+        // So we only expect the action once, for "core.1" overridden by "extOne" module.
+
+        Monkey\Actions\expectDone('service.overridden')
+            ->once()
+            ->with('core.1', 'extOne');
+
+        Package::new($this->mockProperties('test', false))
+            ->addServiceListener($listener)
+            ->addModule($moduleCore)
+            ->addModule($moduleExt1)
+            ->addModule($moduleExt2)
+            ->addModule($moduleExt3)
+            ->boot();
+    }
+
+    /**
+     * Test service listener can stop specific services from being added without triggering errors.
+     *
+     * @test
+     */
+    public function testServiceListenerCanPreventServiceAddedWithoutFailure(): void
+    {
+        $module = $this->mockModule('test', ServiceModule::class);
+        $module->expects('services')->andReturn($this->stubServices('one', 'two', 'three'));
+
+        $listener = static function (string $serviceId): bool {
+            return $serviceId !== 'two';
+        };
+
+        $package = Package::new($this->mockProperties('test', false))
+            ->addServiceListener($listener)
+            ->addModule($module);
+
+        $package->boot();
+        $container = $package->container();
+
+        static::assertTrue($container->has('one'));
+        static::assertFalse($container->has('two'));
+        static::assertTrue($container->has('three'));
+    }
 }

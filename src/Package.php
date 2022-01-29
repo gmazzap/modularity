@@ -14,6 +14,10 @@ use Inpsyde\Modularity\Module\ServiceModule;
 use Inpsyde\Modularity\Properties\Properties;
 use Psr\Container\ContainerInterface;
 
+/**
+ * @psalm-type listener-type "*"|"registered"|"registered-factories"|"extended"
+ * @psalm-type service-listener callable(string,string,Properties,listener-type):bool
+ */
 class Package
 {
     /**
@@ -151,6 +155,13 @@ class Package
     private $moduleStatus = [self::MODULES_ALL => []];
 
     /**
+     * All registered service listeners.
+     *
+     * @var array<listener-type, list<service-listener>>
+     */
+    private $listeners = [];
+
+    /**
      * Hashmap of where keys are names of connected packages, and values are boolean, true
      * if connection was successful.
      *
@@ -228,6 +239,22 @@ class Package
         $added = $registeredServices || $registeredFactories || $extended || $isExecutable;
         $status = $added ? self::MODULE_ADDED : self::MODULE_NOT_ADDED;
         $this->moduleProgress($module->id(), $status);
+
+        return $this;
+    }
+
+    /**
+     * @param service-listener $listener
+     * @param listener-type $type
+     * @return static
+     */
+    public function addServiceListener(
+        callable $listener,
+        string $type = Package::MODULES_ALL
+    ): Package {
+
+        isset($this->listeners[$type]) or $this->listeners[$type] = [];
+        $this->listeners[$type][] = $listener;
 
         return $this;
     }
@@ -377,7 +404,12 @@ class Package
         $ids = [];
         array_walk(
             $services,
-            static function (callable $service, string $id) use ($addCallback, &$ids) {
+            function (callable $service, string $id) use ($addCallback, &$ids, $status, $module) {
+                /** @var listener-type $status */
+                if (!$this->executeListeners($status, $id, $module->id())) {
+                    return;
+                }
+
                 /** @var callable(string, callable) $addCallback */
                 $addCallback($id, $service);
                 /** @var list<string> $ids */
@@ -388,6 +420,27 @@ class Package
         $this->moduleProgress($module->id(), $status, $ids);
 
         return true;
+    }
+
+    /**
+     * @param listener-type $type
+     * @param string $serviceId
+     * @param string $moduleId
+     * @return bool
+     */
+    private function executeListeners(string $type, string $serviceId, string $moduleId): bool
+    {
+        $listeners = array_merge(
+            $this->listeners[$type] ?? [],
+            $this->listeners[self::MODULES_ALL] ?? []
+        );
+
+        $allowService = true;
+        foreach ($listeners as $listener) {
+            $allowService = $listener($serviceId, $moduleId, $this->properties, $type) !== false;
+        }
+
+        return $allowService;
     }
 
     /**
