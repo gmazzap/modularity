@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Inpsyde\Modularity;
 
 use Inpsyde\Modularity\Container\ContainerConfigurator;
+use Inpsyde\Modularity\Container\ServiceListeners;
 use Inpsyde\Modularity\Container\PackageProxyContainer;
 use Inpsyde\Modularity\Module\ExtendingModule;
 use Inpsyde\Modularity\Module\ExecutableModule;
@@ -97,6 +98,11 @@ class Package
     public const ACTION_FAILED_CONNECTION = 'failed-connection';
 
     /**
+     * Custom action which is triggered when a service is not registered because listeners.
+     */
+    public const ACTION_SERVICE_NOT_REGISTERED = 'service-not-registered';
+
+    /**
      * Module states can be used to get information about your module.
      *
      * @example
@@ -176,6 +182,11 @@ class Package
     private $containerConfigurator;
 
     /**
+     * @var ServiceListeners
+     */
+    private $listeners;
+
+    /**
      * @param Properties $properties
      * @param ContainerInterface[] $containers
      *
@@ -193,8 +204,9 @@ class Package
     private function __construct(Properties $properties, ContainerInterface ...$containers)
     {
         $this->properties = $properties;
+        $this->listeners = new ServiceListeners();
 
-        $this->containerConfigurator = new ContainerConfigurator($containers);
+        $this->containerConfigurator = new ContainerConfigurator($containers, $this->listeners);
         $this->containerConfigurator->addService(
             self::PROPERTIES,
             static function () use ($properties) {
@@ -353,21 +365,27 @@ class Package
      */
     private function addModuleServices(Module $module, string $status): bool
     {
-        $services = null;
-        $addCallback = null;
         switch ($status) {
             case self::MODULE_REGISTERED:
                 $services = $module instanceof ServiceModule ? $module->services() : null;
                 $addCallback = [$this->containerConfigurator, 'addService'];
+                $beforeCallback = [$this->listeners, 'updateBeforeRegister'];
+                $afterCallback = [$this->listeners, 'updateAfterRegister'];
                 break;
             case self::MODULE_REGISTERED_FACTORIES:
                 $services = $module instanceof FactoryModule ? $module->factories() : null;
                 $addCallback = [$this->containerConfigurator, 'addFactory'];
+                $beforeCallback = [$this->listeners, 'updateBeforeRegister'];
+                $afterCallback = [$this->listeners, 'updateAfterRegister'];
                 break;
             case self::MODULE_EXTENDED:
                 $services = $module instanceof ExtendingModule ? $module->extensions() : null;
                 $addCallback = [$this->containerConfigurator, 'addExtension'];
+                $beforeCallback = [$this->listeners, 'updateBeforeExtend'];
+                $afterCallback = [$this->listeners, 'updateAfterExtend'];
                 break;
+            default:
+                return false;
         }
 
         if (!$services) {
@@ -377,9 +395,22 @@ class Package
         $ids = [];
         array_walk(
             $services,
-            static function (callable $service, string $id) use ($addCallback, &$ids) {
-                /** @var callable(string, callable) $addCallback */
-                $addCallback($id, $service);
+            function (callable $service, string $id) use (
+                $addCallback,
+                &$ids,
+                $module,
+                $beforeCallback,
+                $afterCallback
+            ) {
+                $moduleId = $module->id();
+
+                if (!$beforeCallback($id, $moduleId, $this->properties)) {
+                    do_action($this->hookName(self::ACTION_SERVICE_NOT_REGISTERED), $id, $moduleId);
+
+                    return;
+                }
+
+                $afterCallback($id, $moduleId, $this->properties, $addCallback($id, $service));
                 /** @var list<string> $ids */
                 $ids[] = $id;
             }
@@ -444,6 +475,57 @@ class Package
     public function connectedPackages(): array
     {
         return $this->connectedPackages;
+    }
+
+    /**
+     * @param ServiceListeners::BEFORE_*|ServiceListeners::AFTER_* $event
+     * @param callable $listener
+     * @param string ...$targetServices
+     * @return static
+     */
+    public function listen(string $event, callable $listener, string ...$targetServices): Package
+    {
+        /**
+         * @psalm-type service-id non-empty-string
+         * @psalm-type module-id non-empty-string
+         * @psalm-type resolved-service mixed
+         * @psalm-type stop-listeners callable():void
+         * @psalm-type before-register callable(service-id,module-id,Properties,stop-listeners):bool
+         * @psalm-type after-register callable(service-id,module-id,Properties,stop-listeners):void
+         * @psalm-type before-get callable(service-id,stop-listeners):bool
+         * @psalm-type after-get callable(service-id,resolved-service,stop-listeners):void
+         */
+
+        switch ($event) {
+            case ServiceListeners::BEFORE_REGISTER:
+                /** @var before-register $listener */
+                $this->listeners->onBeforeRegister($listener, ...$targetServices);
+                break;
+            case ServiceListeners::AFTER_REGISTER:
+                /** @var after-register $listener */
+                $this->listeners->onAfterRegister($listener, ...$targetServices);
+                break;
+            case ServiceListeners::BEFORE_EXTEND:
+                /** @var before-register $listener */
+                $this->listeners->onBeforeExtend($listener, ...$targetServices);
+                break;
+            case ServiceListeners::AFTER_EXTEND:
+                /** @var after-register $listener */
+                $this->listeners->onAfterExtend($listener, ...$targetServices);
+                break;
+            case ServiceListeners::BEFORE_GET:
+                /** @var before-get $listener */
+                $this->listeners->onBeforeGet($listener, ...$targetServices);
+                break;
+            case ServiceListeners::AFTER_GET:
+                /** @var after-get $listener */
+                $this->listeners->onAfterGet($listener, ...$targetServices);
+                break;
+            default:
+                throw new \Exception("{$event} is not a valid service event.");
+        }
+
+        return $this;
     }
 
     /**
