@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Inpsyde\Modularity\Tests\Unit;
 
 use Brain\Monkey;
+use Inpsyde\Modularity\Container\ServiceListeners;
 use Inpsyde\Modularity\Module\ExtendingModule;
 use Inpsyde\Modularity\Module\FactoryModule;
 use Inpsyde\Modularity\Module\ServiceModule;
@@ -624,5 +625,217 @@ class PackageTest extends TestCase
         Monkey\Actions\expectDone($action)->never();
 
         static::assertFalse($package1->connect($package1));
+    }
+
+    /**
+     * Test we can use "before register" listeners to prevent services registration, and in that
+     * case an action is fired with service and module IDs.
+     *
+     * @test
+     */
+    public function testBeforeRegisterListenersCanPreventServiceRegistration(): void
+    {
+        $module1 = $this->mockModule('module1', ServiceModule::class);
+        $module1->shouldReceive('services')->andReturn($this->stubServices('a', 'b', 'c'));
+
+        $module2 = $this->mockModule('module2', ServiceModule::class);
+        $module2->shouldReceive('services')->andReturn($this->stubServices('d', 'e', 'f'));
+
+        $listener = static function (string $id, string $moduleId): bool {
+            return ($moduleId !== 'module2') || ($id === 'e');
+        };
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->listen(ServiceListeners::BEFORE_REGISTER, $listener);
+
+        Monkey\Actions\expectDone($package->hookName(Package::ACTION_SERVICE_NOT_REGISTERED))
+            ->once()->with('d', 'module2')
+            ->andAlsoExpectIt()
+            ->once()->with('f', 'module2');
+
+        $package->addModule($module1)->addModule($module2);
+
+        $package->boot();
+        $container = $package->container();
+
+        static::assertTrue($container->has('a'));
+        static::assertTrue($container->has('b'));
+        static::assertTrue($container->has('c'));
+        static::assertFalse($container->has('d'));
+        static::assertTrue($container->has('e'));
+        static::assertFalse($container->has('f'));
+    }
+
+    /**
+     * Test we can attach listeners to specifics services only.
+     *
+     * @test
+     */
+    public function testListenersCanTargetSpecificServicesOnly(): void
+    {
+        $module = $this->mockModule('test-module', ServiceModule::class);
+        $module->shouldReceive('services')->andReturn($this->stubServices('a', 'b', 'c', 'd', 'e'));
+
+        $collector = ['before-add' => [], 'after-add' => [], 'after-get' => []];
+
+        $onBeforeAdd = static function (string $id) use (&$collector): void {
+            $collector['before-add'][] = $id;
+        };
+
+        $onAfterAdd = static function (string $id) use (&$collector): void {
+            $collector['after-add'][] = $id;
+        };
+
+        $onAfterGet = static function (string $id) use (&$collector): void {
+            $collector['after-get'][] = $id;
+        };
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->listen(ServiceListeners::BEFORE_REGISTER, $onBeforeAdd, 'a', 'c')
+            ->listen(ServiceListeners::AFTER_REGISTER, $onAfterAdd, 'a', 'b', 'e')
+            ->listen(ServiceListeners::AFTER_GET, $onAfterGet, 'b', 'c', 'd')
+            ->addModule($module);
+
+        static::assertSame(['a', 'c'], $collector['before-add']);
+        static::assertSame(['a', 'b', 'e'], $collector['after-add']);
+        static::assertSame([], $collector['after-get']);
+
+        $package->boot();
+        $container = $package->container();
+
+        $container->get('a');
+        $container->get('b');
+        $container->get('d');
+        $container->get('e');
+
+        static::assertSame(['b', 'd'], $collector['after-get']);
+    }
+
+    /**
+     * Test we can use "after get" listeners to interact with created services.
+     *
+     * @test
+     */
+    public function testAfterGetListenersCanExtendsObjects(): void
+    {
+        $module = $this->mockModule('test-module', ServiceModule::class);
+        $module->shouldReceive('services')->andReturn($this->stubServices('foo', 'bar', 'baz'));
+
+        $collector = [];
+        $listener = static function (string $id, $service) use (&$collector): void {
+            if ($service instanceof \ArrayObject) {
+                $collector[] = $id;
+                $service->exchangeArray(['extended' => true]);
+            }
+        };
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->addModule($module)
+            ->listen(ServiceListeners::AFTER_GET, $listener);
+
+        $package->boot();
+        $container = $package->container();
+
+        $foo1 = $container->get('foo');
+        $foo2 = $container->get('foo');
+        $bar1 = $container->get('bar');
+        $bar2 = $container->get('bar');
+        $foo3 = $container->get('foo');
+        $bar3 = $container->get('bar');
+
+        // No matter how many time we retrieve the service, listener is called once.
+        // Moreover, listener is not called for "baz" service whi is never retrieved.
+        static::assertSame(['foo', 'bar'], $collector);
+
+        foreach ([$foo1, $foo2, $foo3, $bar1, $bar2, $bar3] as $service) {
+            /** @var \ArrayObject $service */
+            static::assertSame(['extended' => true], $service->getArrayCopy());
+        }
+    }
+
+    /**
+     * Test each listener has the possibility to stop the rest of listeners for the same event.
+     *
+     * @test
+     */
+    public function testListenersCanBeStopped(): void
+    {
+        $module = $this->mockModule('test-module', ServiceModule::class);
+        $module->expects('services')->andReturn($this->stubServices('foo', 'bar', 'baz'));
+
+        $collectorBefore = '';
+        $collectorAfter = '';
+        $before1 = static function () use (&$collectorBefore): void {
+            $collectorBefore .= 'a';
+        };
+        $before2 = static function () use (&$collectorBefore): void {
+            $collectorBefore .= 'b';
+        };
+        $before3 = static function ($id, callable $stop) use (&$collectorBefore): void {
+            $collectorBefore .= 'c-';
+            $stop();
+        };
+        $before4 = static function () use (&$collectorBefore): void {
+            $collectorBefore .= 'd';
+        };
+        $after1 = static function () use (&$collectorAfter): void {
+            $collectorAfter .= 'a';
+        };
+        $after2 = static function ($id, $service, callable $stop) use (&$collectorAfter): void {
+            $collectorAfter .= '-';
+            $stop();
+        };
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->addModule($module)
+            ->listen(ServiceListeners::BEFORE_GET, $before1)
+            ->listen(ServiceListeners::BEFORE_GET, $before2)
+            ->listen(ServiceListeners::BEFORE_GET, $before3)
+            ->listen(ServiceListeners::BEFORE_GET, $before4)
+            ->listen(ServiceListeners::AFTER_GET, $after1)
+            ->listen(ServiceListeners::AFTER_GET, $after2);
+
+        $package->boot();
+        $container = $package->container();
+        $container->get('foo');
+        $container->get('bar');
+
+        static::assertSame('abc-abc-', $collectorBefore);
+        static::assertSame('a-a-', $collectorAfter);
+    }
+
+    /**
+     * Test "before register" listener can intercept service overrides.
+     *
+     * @test
+     */
+    public function testListenersCanInterceptServiceOverrides(): void
+    {
+        $collector = '';
+
+        $listener = static function(string $serviceId, string $moduleId) use (&$collector): bool {
+            static $registered = [];
+            if (in_array($serviceId, $registered, true)) {
+                $collector = "Attempt overriding service '{$serviceId}' via module '{$moduleId}'.";
+
+                return true;
+            }
+            $registered[] = $serviceId;
+
+            return true;
+        };
+
+        $module1 = $this->mockModule('module-1', ServiceModule::class);
+        $module1->expects('services')->andReturn($this->stubServices('a', 'b', 'c'));
+
+        $module2 = $this->mockModule('module-2', ServiceModule::class);
+        $module2->expects('services')->andReturn($this->stubServices('d', 'a', 'e'));
+
+        Package::new($this->mockProperties('test-package', false))
+            ->listen(ServiceListeners::BEFORE_REGISTER, $listener)
+            ->addModule($module1)
+            ->addModule($module2);
+
+        static::assertSame($collector, "Attempt overriding service 'a' via module 'module-2'.");
     }
 }

@@ -37,23 +37,31 @@ class ReadOnlyContainer implements ContainerInterface
     private $containers;
 
     /**
+     * @var ServiceListeners
+     */
+    private $listeners;
+
+    /**
      * ReadOnlyContainer constructor.
      *
      * @param array<string, callable(ContainerInterface $container):mixed> $services
      * @param array<string, bool> $factoryIds
      * @param array<string, array<callable(mixed, ContainerInterface $container):mixed>> $extensions
      * @param ContainerInterface[] $containers
+     * @param ServiceListeners|null $listeners
      */
     public function __construct(
         array $services,
         array $factoryIds,
         array $extensions,
-        array $containers
+        array $containers,
+        ?ServiceListeners $listeners = null
     ) {
         $this->services = $services;
         $this->factoryIds = $factoryIds;
         $this->extensions = $extensions;
         $this->containers = $containers;
+        $this->listeners = $listeners ?? new ServiceListeners();
     }
 
     /**
@@ -70,6 +78,8 @@ class ReadOnlyContainer implements ContainerInterface
         }
 
         if (array_key_exists($id, $this->services)) {
+            $this->listeners->updateBeforeGet($id);
+
             $service = $this->services[$id]($this);
             $resolved = $this->resolveExtensions($id, $service);
 
@@ -78,14 +88,18 @@ class ReadOnlyContainer implements ContainerInterface
                 unset($this->services[$id]);
             }
 
+            $this->listeners->updateAfterGet($id, $resolved);
+
             return $resolved;
         }
 
         foreach ($this->containers as $container) {
             if ($container->has($id)) {
-                $service = $container->get($id);
+                $this->listeners->updateBeforeGet($id);
+                $resolved = $this->resolveExtensions($id, $container->get($id));
+                $this->listeners->updateAfterGet($id, $resolved);
 
-                return $this->resolveExtensions($id, $service);
+                return $resolved;
             }
         }
 
