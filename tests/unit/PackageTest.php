@@ -5,14 +5,23 @@ declare(strict_types=1);
 namespace Inpsyde\Modularity\Tests\Unit;
 
 use Brain\Monkey;
+use Inpsyde\Modularity\Event\AfterServiceAdded;
+use Inpsyde\Modularity\Event\AfterServiceResolved;
+use Inpsyde\Modularity\Event\BeforeServiceAdded;
+use Inpsyde\Modularity\Event\BeforeServiceResolved;
+use Inpsyde\Modularity\Event\ServiceEvent;
 use Inpsyde\Modularity\Module\ExtendingModule;
 use Inpsyde\Modularity\Module\FactoryModule;
+use Inpsyde\Modularity\Module\ListeningModule;
+use Inpsyde\Modularity\Module\Module;
+use Inpsyde\Modularity\Module\ModuleClassNameIdTrait;
 use Inpsyde\Modularity\Module\ServiceModule;
 use Inpsyde\Modularity\Package;
 use Inpsyde\Modularity\Module\ExecutableModule;
 use Inpsyde\Modularity\Properties\Properties;
 use Inpsyde\Modularity\Tests\TestCase;
 use Psr\Container\ContainerInterface;
+use Psr\EventDispatcher\ListenerProviderInterface;
 
 class PackageTest extends TestCase
 {
@@ -624,5 +633,365 @@ class PackageTest extends TestCase
         Monkey\Actions\expectDone($action)->never();
 
         static::assertFalse($package1->connect($package1));
+    }
+
+    /**
+     * Test we can use "before register" listeners to prevent services registration, and in that
+     * case an action is fired with service and module IDs.
+     *
+     * @test
+     */
+    public function testBeforeRegisterListenersCanPreventServiceRegistration(): void
+    {
+        $module1 = $this->mockModule('module1', ServiceModule::class);
+        $module1->shouldReceive('services')->andReturn($this->stubServices('a', 'b', 'c'));
+
+        $module2 = $this->mockModule('module2', ServiceModule::class);
+        $module2->shouldReceive('services')->andReturn($this->stubServices('d', 'e', 'f'));
+
+        $listener = new class implements ListeningModule
+        {
+            use ModuleClassNameIdTrait;
+
+            public function listen(ServiceEvent $event): void
+            {
+                if (
+                    !($event instanceof BeforeServiceAdded)
+                    || ($event->moduleId() !== 'module2')
+                    || ($event->serviceId() === 'e')
+                ) {
+                    return;
+                }
+
+                $event->disableService();
+                $event->stop();
+            }
+        };
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->addModule($listener);
+
+        Monkey\Actions\expectDone($package->hookName(Package::ACTION_SERVICE_NOT_REGISTERED))
+            ->once()->with('d', 'module2')
+            ->andAlsoExpectIt()
+            ->once()->with('f', 'module2');
+
+        $package->addModule($module1)->addModule($module2);
+
+        $package->boot();
+        $container = $package->container();
+
+        static::assertTrue($container->has('a'));
+        static::assertTrue($container->has('b'));
+        static::assertTrue($container->has('c'));
+        static::assertFalse($container->has('d'));
+        static::assertTrue($container->has('e'));
+        static::assertFalse($container->has('f'));
+    }
+
+    /**
+     * Test "after register" listeners can be used to implement dependencies of modules on services.
+     *
+     * @test
+     */
+    public function testListenersCanBeUsedForModulesDependencies(): void
+    {
+        $module1 = $this->mockModule('module-1', ServiceModule::class);
+        $module1->shouldReceive('services')->andReturn($this->stubServices('a', 'b'));
+
+        $module2 = $this->mockModule('module-2', ServiceModule::class);
+        $module2->shouldReceive('services')->andReturn($this->stubServices('c', 'd'));
+
+        $module3 = $this->mockModule('module-3', ServiceModule::class);
+        $module3->shouldReceive('services')->andReturn($this->stubServices('e', 'f'));
+
+        $package = Package::new($this->mockProperties('test-package', false));
+
+        $listener = new class($package, $module2, $module3) implements ListeningModule
+        {
+            use ModuleClassNameIdTrait;
+            private $package;
+            private $module2;
+            private $module3;
+
+            public function __construct(Package $package, $module2, $module3) {
+                $this->package = $package;
+                $this->module2 = $module2;
+                $this->module3 = $module3;
+            }
+
+            public function listen(ServiceEvent $event): void
+            {
+                if (!($event instanceof AfterServiceAdded)) {
+                    return;
+                }
+
+                switch ($event->serviceId()) {
+                    case 'b':
+                        $this->package->addModule($this->module2);
+                        break;
+                    case 'meh':
+                        $this->package->addModule($this->module3);
+                        break;
+                }
+            }
+        };
+
+        $package->addModule($listener)->boot($module1);
+        $container = $package->container();
+
+        // Registered by module-1, added via "boot"
+        static::assertTrue($container->has('a'));
+        static::assertTrue($container->has('b'));
+
+        // Registered by module-2, which is added when service "a" is added
+        static::assertTrue($container->has('c'));
+        static::assertTrue($container->has('d'));
+
+        // Registered by module-3, which should NOT be added, because service "meh" is not there
+        static::assertFalse($container->has('e'));
+        static::assertFalse($container->has('f'));
+    }
+
+    /**
+     * Test we can use "after get" listeners to interact with created services.
+     *
+     * @test
+     */
+    public function testAfterGetListenersCanExtendsObjects(): void
+    {
+        $loggerModule = $this->mockModule('logger-module', ServiceModule::class);
+        $loggerModule->shouldReceive('services')->andReturn([
+            'logger' => static function () {
+                return new class {
+                    public $logs = [];
+                    public function log(string $message): void {
+                        $this->logs[] = $message;
+                    }
+                };
+            }
+        ]);
+
+        $module1 = $this->mockModule('module-1', ServiceModule::class);
+        $module1->shouldReceive('services')->andReturn([
+            'logger-aware-1' => static function () {
+                return new class {
+                    public $logger;
+                    public function setLogger($logger) {
+                        $this->logger = $logger;
+                    }
+                    public function log(string $message) {
+                        $this->logger->log("[ONE] {$message}");
+                    }
+                };
+            },
+            'logger-aware-2' => static function () {
+                return new class {
+                    public $logger;
+                    public function setLogger($logger) {
+                        $this->logger = $logger;
+                    }
+                    public function log(string $message) {
+                        $this->logger->log("[TWO] {$message}");
+                    }
+                };
+            }
+        ]);
+
+        $module2 = $this->mockModule('module-2', ServiceModule::class);
+        $module2->shouldReceive('services')->andReturn([
+            'logger-aware-3' => static function () {
+                return new class {
+                    public $logger;
+                    public function setLogger($logger) {
+                        $this->logger = $logger;
+                    }
+                    public function log(string $message) {
+                        $this->logger->log("[THREE] {$message}");
+                    }
+                };
+            },
+            'logger-aware-4' => static function () {
+                return new class {
+                    public $logger;
+                    public function setLogger($logger) {
+                        $this->logger = $logger;
+                    }
+                    public function log(string $message) {
+                        $this->logger->log("[FOUR] {$message}");
+                    }
+                };
+            }
+        ]);
+
+        $listener = new class() implements ListeningModule
+        {
+            use ModuleClassNameIdTrait;
+
+            public $collector = [];
+
+            public function listen(ServiceEvent $event): void
+            {
+                if (
+                    ($event instanceof AfterServiceResolved)
+                    && (stripos($event->serviceId(), 'logger-aware-') === 0)
+                ) {
+                    $event->service()->setLogger($event->container()->get('logger'));
+                    $this->collector[] = $event->serviceId();
+                }
+            }
+        };
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->addModule($module1)
+            ->addModule($listener)
+            ->addModule($loggerModule)
+            ->addModule($module2);
+
+        $package->boot();
+        $container = $package->container();
+
+        $two = $container->get('logger-aware-2');
+        $one = $container->get('logger-aware-1');
+        $four = $container->get('logger-aware-4');
+        $oneAgain = $container->get('logger-aware-1');
+        $fourAgain = $container->get('logger-aware-4');
+        $oneAgainAgain = $container->get('logger-aware-1');
+        $twoAgain = $container->get('logger-aware-2');
+
+        static::assertSame($one, $oneAgain);
+        static::assertSame($one, $oneAgainAgain);
+        static::assertSame($two, $twoAgain);
+        static::assertSame($four, $fourAgain);
+
+        // No matter how many time we retrieve the service, listener is called once.
+        // Moreover, listener is not called for "logger-aware-3" service which is never retrieved.
+        static::assertSame(
+            ['logger-aware-2', 'logger-aware-1', 'logger-aware-4'],
+            $listener->collector
+        );
+
+        $one->log('Test!');
+        $two->log('Test!');
+        $four->log('Test!');
+
+        static::assertSame(
+            ['[ONE] Test!', '[TWO] Test!', '[FOUR] Test!'],
+            $container->get('logger')->logs
+        );
+    }
+
+    /**
+     * Test each listener has the possibility to stop the rest of listeners for the same event.
+     *
+     * @test
+     */
+    public function testListenersCanBeStopped(): void
+    {
+        $module = $this->mockModule('test-module', ServiceModule::class);
+        $module->expects('services')->andReturn($this->stubServices('foo', 'bar', 'baz'));
+
+        $listener = new class() implements Module, ListenerProviderInterface
+        {
+            use ModuleClassNameIdTrait;
+
+            public $before = '';
+            public $after = '';
+
+            public function getListenersForEvent(object $event): iterable
+            {
+                if ($event instanceof BeforeServiceResolved) {
+                    return [
+                        function (): void {
+                            $this->before .= 'a';
+                        },
+                        function (): void {
+                            $this->before .= 'b';
+                        },
+                        function (BeforeServiceResolved $event): void {
+                            $event->stop();
+                            $this->before .= 'c-';
+                        },
+                        function (): void {
+                            $this->before .= 'd';
+                        },
+                        function (): void {
+                            $this->before .= 'e';
+                        }
+                    ];
+                }
+
+                if ($event instanceof AfterServiceResolved) {
+                    return [
+                        function (): void {
+                            $this->after .= 'a';
+                        },
+                        function (AfterServiceResolved $event): void {
+                            $this->after .= '-';
+                            $event->stop();
+                        }
+                    ];
+                }
+
+                return [];
+            }
+        };
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->addModule($module)
+            ->addModule($listener);
+
+        $package->boot();
+        $container = $package->container();
+        $container->get('foo');
+        $container->get('bar');
+
+        static::assertSame('abc-abc-', $listener->before);
+        static::assertSame('a-a-', $listener->after);
+    }
+
+    /**
+     * Test "before register" listener can intercept service overrides.
+     *
+     * @test
+     */
+    public function testListenersCanInterceptServiceOverrides(): void
+    {
+        $listener = new class implements ListeningModule
+        {
+            use ModuleClassNameIdTrait;
+
+            public $collector = '';
+
+            public function listen(ServiceEvent $event): void
+            {
+                if (
+                    ($event instanceof BeforeServiceAdded)
+                    && ($event->type() === ServiceEvent::BEFORE_OVERRIDE)
+                ) {
+                    $this->collector = sprintf(
+                        "Overriding service '%s' via module '%s'.",
+                        $event->serviceId(),
+                        $event->moduleId()
+                    );
+                }
+            }
+        };
+
+        $module1 = $this->mockModule('module-1', ServiceModule::class);
+        $module1->expects('services')->andReturn($this->stubServices('a', 'b', 'c'));
+
+        $module2 = $this->mockModule('module-2', ServiceModule::class);
+        $module2->expects('services')->andReturn($this->stubServices('d', 'a', 'e'));
+
+        Package::new($this->mockProperties('test-package', false))
+            ->addModule($listener)
+            ->addModule($module1)
+            ->addModule($module2);
+
+        static::assertSame(
+            $listener->collector,
+            "Overriding service 'a' via module 'module-2'."
+        );
     }
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Inpsyde\Modularity\Container;
 
+use Inpsyde\Modularity\Event;
 use Psr\Container\ContainerInterface;
 use Psr\Container\NotFoundExceptionInterface;
 
@@ -37,6 +38,11 @@ class ReadOnlyContainer implements ContainerInterface
     private $containers;
 
     /**
+     * @var Event\Dispatcher
+     */
+    private $dispatcher;
+
+    /**
      * ReadOnlyContainer constructor.
      *
      * @param array<string, callable(ContainerInterface $container):mixed> $services
@@ -48,12 +54,14 @@ class ReadOnlyContainer implements ContainerInterface
         array $services,
         array $factoryIds,
         array $extensions,
-        array $containers
+        array $containers,
+        ?Event\Dispatcher $dispatcher = null
     ) {
         $this->services = $services;
         $this->factoryIds = $factoryIds;
         $this->extensions = $extensions;
         $this->containers = $containers;
+        $this->dispatcher = $dispatcher ?? new Event\Dispatcher();
     }
 
     /**
@@ -70,6 +78,11 @@ class ReadOnlyContainer implements ContainerInterface
         }
 
         if (array_key_exists($id, $this->services)) {
+            $isFactory = isset($this->factoryIds[$id]);
+
+            $beforeEvent = Event\BeforeServiceResolved::new($id, $this, false, $isFactory);
+            $this->dispatcher->dispatch($beforeEvent);
+
             $service = $this->services[$id]($this);
             $resolved = $this->resolveExtensions($id, $service);
 
@@ -78,14 +91,23 @@ class ReadOnlyContainer implements ContainerInterface
                 unset($this->services[$id]);
             }
 
+            $event = Event\AfterServiceResolved::new($id, $resolved, $this, false, $isFactory);
+            $this->dispatcher->dispatch($event);
+
             return $resolved;
         }
 
         foreach ($this->containers as $container) {
             if ($container->has($id)) {
-                $service = $container->get($id);
+                $beforeEvent = Event\BeforeServiceResolved::new($id, $this, true, false);
+                $this->dispatcher->dispatch($beforeEvent);
 
-                return $this->resolveExtensions($id, $service);
+                $service = $this->resolveExtensions($id, $container->get($id));
+
+                $event = Event\AfterServiceResolved::new($id, $service, $this, true, false);
+                $this->dispatcher->dispatch($event);
+
+                return $service;
             }
         }
 

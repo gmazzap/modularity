@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Inpsyde\Modularity\Container;
 
-use Psr\Container\ContainerExceptionInterface;
+use Inpsyde\Modularity\Event\Dispatcher;
 use Psr\Container\ContainerInterface;
 
 class ContainerConfigurator
@@ -34,13 +34,18 @@ class ContainerConfigurator
     private $compiledContainer;
 
     /**
-     * ContainerConfigurator constructor.
-     *
-     * @param ContainerInterface[] $containers
+     * @var Dispatcher|null
      */
-    public function __construct(array $containers = [])
+    private $dispatcher;
+
+    /**
+     * @param array<ContainerInterface> $containers
+     * @param Dispatcher|null $dispatcher
+     */
+    public function __construct(array $containers = [], ?Dispatcher $dispatcher = null)
     {
         array_map([$this, 'addContainer'], $containers);
+        $this->dispatcher = $dispatcher;
     }
 
     /**
@@ -148,7 +153,8 @@ class ContainerConfigurator
                 $this->services,
                 $this->factoryIds,
                 $this->extensions,
-                $this->containers
+                $this->containers,
+                $this->dispatcher
             );
         }
 
