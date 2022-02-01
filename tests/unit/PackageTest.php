@@ -667,6 +667,52 @@ class PackageTest extends TestCase
     }
 
     /**
+     * Test "after register" listeners can be used to implement dependencies of modules on services.
+     *
+     * @test
+     */
+    public function testListenersCanBeUsedForModulesDependencies(): void
+    {
+        $module1 = $this->mockModule('module-1', ServiceModule::class);
+        $module1->shouldReceive('services')->andReturn($this->stubServices('a', 'b'));
+
+        $module2 = $this->mockModule('module-2', ServiceModule::class);
+        $module2->shouldReceive('services')->andReturn($this->stubServices('c', 'd'));
+
+        $module3 = $this->mockModule('module-3', ServiceModule::class);
+        $module3->shouldReceive('services')->andReturn($this->stubServices('e', 'f'));
+
+        $package = Package::new($this->mockProperties('test-package', false));
+
+        $listener = static function(string $serviceId) use ($package, $module2, $module3) {
+            if ($serviceId === 'b') {
+                $package->addModule($module2);
+            }
+            if ($serviceId === 'meh') {
+                $package->addModule($module3);
+            }
+        };
+
+        $package
+            ->listen(ServiceListeners::AFTER_REGISTER, $listener)
+            ->boot($module1);
+
+        $container = $package->container();
+
+        // Registered by module-1, added via "boot"
+        static::assertTrue($container->has('a'));
+        static::assertTrue($container->has('b'));
+
+        // Registered by module-2, which is added when service "a" is added
+        static::assertTrue($container->has('c'));
+        static::assertTrue($container->has('d'));
+
+        // Registered by module-3, which should NOT be added, because service "meh" is not there
+        static::assertFalse($container->has('e'));
+        static::assertFalse($container->has('f'));
+    }
+
+    /**
      * Test we can attach listeners to specifics services only.
      *
      * @test
