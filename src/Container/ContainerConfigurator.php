@@ -34,13 +34,20 @@ class ContainerConfigurator
     private $compiledContainer;
 
     /**
+     * @var null|ServiceListeners
+     */
+    private $listeners;
+
+    /**
      * ContainerConfigurator constructor.
      *
      * @param ContainerInterface[] $containers
+     * @param ServiceListeners|null $listeners
      */
-    public function __construct(array $containers = [])
+    public function __construct(array $containers = [], ?ServiceListeners $listeners = null)
     {
         array_map([$this, 'addContainer'], $containers);
+        $this->listeners = $listeners;
     }
 
     /**
@@ -148,7 +155,8 @@ class ContainerConfigurator
                 $this->services,
                 $this->factoryIds,
                 $this->extensions,
-                $this->containers
+                $this->containers,
+                $this->listeners
             );
         }
 
