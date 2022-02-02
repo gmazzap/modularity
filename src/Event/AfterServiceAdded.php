@@ -6,119 +6,52 @@ namespace Inpsyde\Modularity\Event;
 
 use Inpsyde\Modularity\Properties\Properties;
 
-class AfterServiceAdded implements ServiceEvent
+final class AfterServiceAdded implements ServiceEvent
 {
     use StoppableTrait;
 
     /**
      * @var string
      */
-    protected $name;
+    protected $type;
 
     /**
      * @var string
      */
-    protected $serviceId;
+    private $serviceId;
+
+    /**
+     * @var callable
+     */
+    private $serviceFactory;
 
     /**
      * @var string
      */
-    protected $moduleId;
+    private $moduleId;
 
     /**
      * @var Properties
      */
-    protected $properties;
+    private $properties;
 
     /**
+     * @param string $type
      * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return AfterServiceAdded
-     */
-    public static function newAfterRegister(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): AfterServiceAdded {
-
-        return new self(self::AFTER_REGISTER, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return AfterServiceAdded
-     */
-    public static function newAfterRegisterFactory(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): AfterServiceAdded {
-
-        return new self(self::AFTER_REGISTER_FACTORY, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return AfterServiceAdded
-     */
-    public static function newAfterOverride(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): AfterServiceAdded {
-
-        return new self(self::AFTER_OVERRIDE, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return AfterServiceAdded
-     */
-    public static function newAfterOverrideWithFactory(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): AfterServiceAdded {
-
-        return new self(self::AFTER_OVERRIDE_WITH_FACTORY, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return AfterServiceAdded
-     */
-    public static function newAfterExtend(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): AfterServiceAdded {
-
-        return new self(self::AFTER_EXTEND, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $name
-     * @param string $serviceId
+     * @param callable $serviceFactory
      * @param string $moduleId
      * @param Properties $properties
      */
-    protected function __construct(
-        string $name,
+    public function __construct(
+        string $type,
         string $serviceId,
+        callable $serviceFactory,
         string $moduleId,
         Properties $properties
     ) {
-        $this->name = $name;
+        $this->type = $type;
         $this->serviceId = $serviceId;
+        $this->serviceFactory = $serviceFactory;
         $this->moduleId = $moduleId;
         $this->properties = $properties;
     }
@@ -128,7 +61,7 @@ class AfterServiceAdded implements ServiceEvent
      */
     public function type(): string
     {
-        return $this->name;
+        return $this->type;
     }
 
     /**
@@ -137,6 +70,14 @@ class AfterServiceAdded implements ServiceEvent
     public function serviceId(): string
     {
         return $this->serviceId;
+    }
+
+    /**
+     * @return callable
+     */
+    public function serviceFactory(): callable
+    {
+        return $this->serviceFactory;
     }
 
     /**

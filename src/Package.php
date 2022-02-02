@@ -413,9 +413,9 @@ class Package
             ) {
                 $moduleId = $module->id();
                 $isOverride = $this->containerConfigurator->hasService($id);
-                $eventArgs = [$id, $moduleId, $isFactory, $isExtension, $isOverride];
+                $eventArgs = [$id, $addCallback, $moduleId, $isFactory, $isExtension, $isOverride];
 
-                $eventBefore = $this->factoryBeforeEvent(...$eventArgs);
+                $eventBefore = $this->factoryEvent(Event\BeforeServiceAdded::class, ...$eventArgs);
                 $this->eventDispatcher->dispatch($eventBefore);
                 if (!$eventBefore->isServiceEnabled()) {
                     do_action($this->hookName(self::ACTION_SERVICE_NOT_REGISTERED), $id, $moduleId);
@@ -428,7 +428,7 @@ class Package
                 /** @var list<string> $ids */
                 $ids[] = $id;
 
-                $afterEvent = $this->factoryAfterEvent(...$eventArgs);
+                $afterEvent = $this->factoryEvent(Event\AfterServiceAdded::class, ...$eventArgs);
                 $this->eventDispatcher->dispatch($afterEvent);
             }
         );
@@ -621,68 +621,55 @@ class Package
     }
 
     /**
+     * @param class-string<Event\BeforeServiceAdded>|class-string<Event\AfterServiceAdded> $class
      * @param string $serviceId
+     * @param callable $serviceFactory
      * @param string $moduleId
      * @param bool $isFactory
      * @param bool $isExtension
      * @param bool $isOverride
-     * @return Event\BeforeServiceAdded
+     * @return ($class is class-string<Event\BeforeServiceAdded>
+     *  ? Event\BeforeServiceAdded
+     *  : Event\AfterServiceAdded)
      */
-    private function factoryBeforeEvent(
+    private function factoryEvent(
+        string $class,
         string $serviceId,
+        callable $serviceFactory,
         string $moduleId,
         bool $isFactory,
         bool $isExtension,
         bool $isOverride
-    ): Event\BeforeServiceAdded {
+    ): Event\ServiceEvent {
 
-        $params = [$serviceId, $moduleId, $this->properties];
-
-        if ($isExtension) {
-            return Event\BeforeServiceAdded::newBeforeExtend(...$params);
+        switch (true) {
+            case $isExtension:
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_EXTEND
+                    : Event\ServiceEvent::AFTER_EXTEND;
+                break;
+            case ($isFactory && $isOverride):
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_OVERRIDE_WITH_FACTORY
+                    : Event\ServiceEvent::AFTER_OVERRIDE_WITH_FACTORY;
+                break;
+            case $isFactory:
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_REGISTER_FACTORY
+                    : Event\ServiceEvent::AFTER_REGISTER_FACTORY;
+                break;
+            case $isOverride:
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_OVERRIDE
+                    : Event\ServiceEvent::AFTER_OVERRIDE;
+                break;
+            default:
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_REGISTER
+                    : Event\ServiceEvent::AFTER_REGISTER;
+                break;
         }
 
-        if ($isFactory) {
-            return $isOverride
-                ? Event\BeforeServiceAdded::newBeforeOverrideWithFactory(...$params)
-                : Event\BeforeServiceAdded::newBeforeRegisterFactory(...$params);
-        }
-
-        return $isOverride
-            ? Event\BeforeServiceAdded::newBeforeOverride(...$params)
-            : Event\BeforeServiceAdded::newBeforeRegister(...$params);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param string $moduleId
-     * @param bool $isFactory
-     * @param bool $isExtension,
-     * @param bool $isOverride
-     * @return Event\AfterServiceAdded
-     */
-    private function factoryAfterEvent(
-        string $serviceId,
-        string $moduleId,
-        bool $isFactory,
-        bool $isExtension,
-        bool $isOverride
-    ): Event\AfterServiceAdded {
-
-        $params = [$serviceId, $moduleId, $this->properties];
-
-        if ($isExtension) {
-            return Event\AfterServiceAdded::newAfterExtend(...$params);
-        }
-
-        if ($isFactory) {
-            return $isOverride
-                ? Event\AfterServiceAdded::newAfterOverrideWithFactory(...$params)
-                : Event\AfterServiceAdded::newAfterRegisterFactory(...$params);
-        }
-
-        return $isOverride
-            ? Event\AfterServiceAdded::newAfterOverride(...$params)
-            : Event\AfterServiceAdded::newAfterRegister(...$params);
+        return new $class($type, $serviceId, $serviceFactory, $moduleId, $this->properties);
     }
 }

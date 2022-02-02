@@ -80,7 +80,7 @@ class ReadOnlyContainer implements ContainerInterface
         if (array_key_exists($id, $this->services)) {
             $isFactory = isset($this->factoryIds[$id]);
 
-            $beforeEvent = Event\BeforeServiceResolved::new($id, $this, false, $isFactory);
+            $beforeEvent = new Event\BeforeServiceResolved($id, $this, false, $isFactory);
             $this->dispatcher->dispatch($beforeEvent);
 
             $service = $this->services[$id]($this);
@@ -91,7 +91,7 @@ class ReadOnlyContainer implements ContainerInterface
                 unset($this->services[$id]);
             }
 
-            $event = Event\AfterServiceResolved::new($id, $resolved, $this, false, $isFactory);
+            $event = new Event\AfterServiceResolved($id, $resolved, $this, false, $isFactory);
             $this->dispatcher->dispatch($event);
 
             return $resolved;
@@ -99,12 +99,12 @@ class ReadOnlyContainer implements ContainerInterface
 
         foreach ($this->containers as $container) {
             if ($container->has($id)) {
-                $beforeEvent = Event\BeforeServiceResolved::new($id, $this, true, false);
+                $beforeEvent = new Event\BeforeServiceResolved($id, $this, true, false);
                 $this->dispatcher->dispatch($beforeEvent);
 
                 $service = $this->resolveExtensions($id, $container->get($id));
 
-                $event = Event\AfterServiceResolved::new($id, $service, $this, true, false);
+                $event = new Event\AfterServiceResolved($id, $service, $this, true, false);
                 $this->dispatcher->dispatch($event);
 
                 return $service;

@@ -6,14 +6,14 @@ namespace Inpsyde\Modularity\Event;
 
 use Psr\Container\ContainerInterface;
 
-class BeforeServiceResolved implements ServiceEvent
+final class BeforeServiceResolved implements ServiceEvent
 {
     use StoppableTrait;
 
     /**
      * @var string
      */
-    protected $serviceId;
+    private $serviceId;
 
     /**
      * @var ContainerInterface
@@ -35,25 +35,8 @@ class BeforeServiceResolved implements ServiceEvent
      * @param ContainerInterface $container
      * @param bool $isExternalContainer
      * @param bool $isFactory
-     * @return BeforeServiceResolved
      */
-    public static function new(
-        string $serviceId,
-        ContainerInterface $container,
-        bool $isExternalContainer,
-        bool $isFactory
-    ): BeforeServiceResolved {
-
-        return new self($serviceId, $container, $isExternalContainer, $isFactory);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param ContainerInterface $container
-     * @param bool $isExternalContainer
-     * @param bool $isFactory
-     */
-    protected function __construct(
+    public function __construct(
         string $serviceId,
         ContainerInterface $container,
         bool $isExternalContainer,

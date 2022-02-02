@@ -6,126 +6,99 @@ namespace Inpsyde\Modularity\Event;
 
 use Inpsyde\Modularity\Properties\Properties;
 
-class BeforeServiceAdded implements ServiceEvent
+final class BeforeServiceAdded implements ServiceEvent
 {
     use StoppableTrait;
 
     /**
      * @var bool
      */
-    protected $serviceAllowed = true;
+    private $serviceAllowed = true;
 
     /**
      * @var string
      */
-    protected $name;
+    private $type;
 
     /**
      * @var string
      */
-    protected $serviceId;
+    private $serviceId;
+
+    /**
+     * @var callable
+     */
+    private $serviceFactory;
 
     /**
      * @var string
      */
-    protected $moduleId;
+    private $moduleId;
 
     /**
      * @var Properties
      */
-    protected $properties;
+    private $properties;
 
     /**
+     * @param string $type
      * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return BeforeServiceAdded
-     */
-    public static function newBeforeRegister(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): BeforeServiceAdded {
-
-        return new self(self::BEFORE_REGISTER, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return BeforeServiceAdded
-     */
-    public static function newBeforeRegisterFactory(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): BeforeServiceAdded {
-
-        return new self(self::BEFORE_REGISTER_FACTORY, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return BeforeServiceAdded
-     */
-    public static function newBeforeOverride(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): BeforeServiceAdded {
-
-        return new self(self::BEFORE_OVERRIDE, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return BeforeServiceAdded
-     */
-    public static function newBeforeOverrideWithFactory(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): BeforeServiceAdded {
-
-        return new self(self::BEFORE_OVERRIDE_WITH_FACTORY, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $serviceId
-     * @param string $moduleId
-     * @param Properties $properties
-     * @return BeforeServiceAdded
-     */
-    public static function newBeforeExtend(
-        string $serviceId,
-        string $moduleId,
-        Properties $properties
-    ): BeforeServiceAdded {
-
-        return new self(self::BEFORE_EXTEND, $serviceId, $moduleId, $properties);
-    }
-
-    /**
-     * @param string $name
-     * @param string $serviceId
+     * @param callable $serviceFactory
      * @param string $moduleId
      * @param Properties $properties
      */
-    protected function __construct(
-        string $name,
+    public function __construct(
+        string $type,
         string $serviceId,
+        callable $serviceFactory,
         string $moduleId,
         Properties $properties
     ) {
-        $this->name = $name;
+        $this->type = $type;
         $this->serviceId = $serviceId;
+        $this->serviceFactory = $serviceFactory;
         $this->moduleId = $moduleId;
         $this->properties = $properties;
+    }
+
+    /**
+     * @return string
+     */
+    public function type(): string
+    {
+        return $this->type;
+    }
+
+    /**
+     * @return string
+     */
+    public function serviceId(): string
+    {
+        return $this->serviceId;
+    }
+
+    /**
+     * @return callable
+     */
+    public function serviceFactory(): callable
+    {
+        return $this->serviceFactory;
+    }
+
+    /**
+     * @return string
+     */
+    public function moduleId(): string
+    {
+        return $this->moduleId;
+    }
+
+    /**
+     * @return Properties
+     */
+    public function properties(): Properties
+    {
+        return $this->properties;
     }
 
     /**
@@ -150,37 +123,5 @@ class BeforeServiceAdded implements ServiceEvent
     public function isServiceEnabled(): bool
     {
         return $this->serviceAllowed;
-    }
-
-    /**
-     * @return string
-     */
-    public function type(): string
-    {
-        return $this->name;
-    }
-
-    /**
-     * @return string
-     */
-    public function serviceId(): string
-    {
-        return $this->serviceId;
-    }
-
-    /**
-     * @return string
-     */
-    public function moduleId(): string
-    {
-        return $this->moduleId;
-    }
-
-    /**
-     * @return Properties
-     */
-    public function properties(): Properties
-    {
-        return $this->properties;
     }
 }
