@@ -62,7 +62,7 @@ final class AfterServiceResolved implements ServiceEvent
      */
     public function type(): string
     {
-        return self::BEFORE_RESOLVED;
+        return self::AFTER_RESOLVED;
     }
 
     /**
