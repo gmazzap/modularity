@@ -13,7 +13,6 @@ use Inpsyde\Modularity\Event\ServiceEvent;
 use Inpsyde\Modularity\Module\ExtendingModule;
 use Inpsyde\Modularity\Module\FactoryModule;
 use Inpsyde\Modularity\Module\ListeningModule;
-use Inpsyde\Modularity\Module\Module;
 use Inpsyde\Modularity\Module\ModuleClassNameIdTrait;
 use Inpsyde\Modularity\Module\ServiceModule;
 use Inpsyde\Modularity\Package;
@@ -21,7 +20,6 @@ use Inpsyde\Modularity\Module\ExecutableModule;
 use Inpsyde\Modularity\Properties\Properties;
 use Inpsyde\Modularity\Tests\TestCase;
 use Psr\Container\ContainerInterface;
-use Psr\EventDispatcher\ListenerProviderInterface;
 
 class PackageTest extends TestCase
 {
@@ -653,18 +651,16 @@ class PackageTest extends TestCase
         {
             use ModuleClassNameIdTrait;
 
-            public function listen(ServiceEvent $event): void
+            public function listeners(): iterable
             {
-                if (
-                    !($event instanceof BeforeServiceAdded)
-                    || ($event->moduleId() !== 'module2')
-                    || ($event->serviceId() === 'e')
-                ) {
-                    return;
-                }
-
-                $event->disableService();
-                $event->stop();
+                return [
+                    static function (BeforeServiceAdded $event): void {
+                        if (($event->moduleId() === 'module2') && ($event->serviceId() !== 'e')) {
+                            $event->disableService();
+                            $event->stop();
+                        }
+                    }
+                ];
             }
         };
 
@@ -720,20 +716,20 @@ class PackageTest extends TestCase
                 $this->module3 = $module3;
             }
 
-            public function listen(ServiceEvent $event): void
+            public function listeners(): iterable
             {
-                if (!($event instanceof AfterServiceAdded)) {
-                    return;
-                }
-
-                switch ($event->serviceId()) {
-                    case 'b':
-                        $this->package->addModule($this->module2);
-                        break;
-                    case 'meh':
-                        $this->package->addModule($this->module3);
-                        break;
-                }
+                return [
+                    function (AfterServiceAdded $event): void {
+                        switch ($event->serviceId()) {
+                            case 'b':
+                                $this->package->addModule($this->module2);
+                                break;
+                            case 'meh':
+                                $this->package->addModule($this->module3);
+                                break;
+                        }
+                    }
+                ];
             }
         };
 
@@ -830,15 +826,16 @@ class PackageTest extends TestCase
 
             public $collector = [];
 
-            public function listen(ServiceEvent $event): void
+            public function listeners(): iterable
             {
-                if (
-                    ($event instanceof AfterServiceResolved)
-                    && (stripos($event->serviceId(), 'logger-aware-') === 0)
-                ) {
-                    $event->service()->setLogger($event->container()->get('logger'));
-                    $this->collector[] = $event->serviceId();
-                }
+                return [
+                    function (AfterServiceResolved $event): void {
+                        if (stripos($event->serviceId(), 'logger-aware-') === 0) {
+                            $event->service()->setLogger($event->container()->get('logger'));
+                            $this->collector[] = $event->serviceId();
+                        }
+                    }
+                ];
             }
         };
 
@@ -891,49 +888,40 @@ class PackageTest extends TestCase
         $module = $this->mockModule('test-module', ServiceModule::class);
         $module->expects('services')->andReturn($this->stubServices('foo', 'bar', 'baz'));
 
-        $listener = new class() implements Module, ListenerProviderInterface
+        $listener = new class() implements ListeningModule
         {
             use ModuleClassNameIdTrait;
 
             public $before = '';
             public $after = '';
 
-            public function getListenersForEvent(object $event): iterable
+            public function listeners(): iterable
             {
-                if ($event instanceof BeforeServiceResolved) {
-                    return [
-                        function (): void {
-                            $this->before .= 'a';
-                        },
-                        function (): void {
-                            $this->before .= 'b';
-                        },
-                        function (BeforeServiceResolved $event): void {
-                            $event->stop();
-                            $this->before .= 'c-';
-                        },
-                        function (): void {
-                            $this->before .= 'd';
-                        },
-                        function (): void {
-                            $this->before .= 'e';
-                        }
-                    ];
-                }
-
-                if ($event instanceof AfterServiceResolved) {
-                    return [
-                        function (): void {
-                            $this->after .= 'a';
-                        },
-                        function (AfterServiceResolved $event): void {
-                            $this->after .= '-';
-                            $event->stop();
-                        }
-                    ];
-                }
-
-                return [];
+                return [
+                    function (BeforeServiceResolved $event): void {
+                        $this->before .= 'a';
+                    },
+                    function (AfterServiceResolved $event): void {
+                        $this->after .= 'a';
+                    },
+                    function (BeforeServiceResolved $event): void {
+                        $this->before .= 'b';
+                    },
+                    function (BeforeServiceResolved $event): void {
+                        $event->stop();
+                        $this->before .= 'c-';
+                    },
+                    function (AfterServiceResolved $event): void {
+                        $this->after .= '-';
+                        $event->stop();
+                    },
+                    function (BeforeServiceResolved $event): void {
+                        $this->before .= 'd';
+                    },
+                    function (BeforeServiceResolved $event): void {
+                        $this->before .= 'e';
+                    },
+                ];
             }
         };
 
@@ -963,18 +951,19 @@ class PackageTest extends TestCase
 
             public $collector = '';
 
-            public function listen(ServiceEvent $event): void
+            public function listeners(): iterable
             {
-                if (
-                    ($event instanceof BeforeServiceAdded)
-                    && ($event->type() === ServiceEvent::BEFORE_OVERRIDE)
-                ) {
-                    $this->collector = sprintf(
-                        "Overriding service '%s' via module '%s'.",
-                        $event->serviceId(),
-                        $event->moduleId()
-                    );
-                }
+                return [
+                    function (BeforeServiceAdded $event): void {
+                        if ($event->type() === ServiceEvent::BEFORE_OVERRIDE) {
+                            $this->collector = sprintf(
+                                "Overriding service '%s' via module '%s'.",
+                                $event->serviceId(),
+                                $event->moduleId()
+                            );
+                        }
+                    }
+                ];
             }
         };
 
