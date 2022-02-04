@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Inpsyde\Modularity\Container;
 
+use Inpsyde\Modularity\Event;
 use Psr\Container\ContainerInterface;
 use Psr\Container\NotFoundExceptionInterface;
 
@@ -37,6 +38,11 @@ class ReadOnlyContainer implements ContainerInterface
     private $containers;
 
     /**
+     * @var Event\Dispatcher
+     */
+    private $dispatcher;
+
+    /**
      * ReadOnlyContainer constructor.
      *
      * @param array<string, callable(ContainerInterface $container):mixed> $services
@@ -48,12 +54,14 @@ class ReadOnlyContainer implements ContainerInterface
         array $services,
         array $factoryIds,
         array $extensions,
-        array $containers
+        array $containers,
+        ?Event\Dispatcher $dispatcher = null
     ) {
         $this->services = $services;
         $this->factoryIds = $factoryIds;
         $this->extensions = $extensions;
         $this->containers = $containers;
+        $this->dispatcher = $dispatcher ?? new Event\Dispatcher();
     }
 
     /**
@@ -70,6 +78,9 @@ class ReadOnlyContainer implements ContainerInterface
         }
 
         if (array_key_exists($id, $this->services)) {
+            $isFactory = isset($this->factoryIds[$id]);
+            $this->dispatchEvent(Event\BeforeServiceResolved::class, $id, $isFactory);
+
             $service = $this->services[$id]($this);
             $resolved = $this->resolveExtensions($id, $service);
 
@@ -78,21 +89,38 @@ class ReadOnlyContainer implements ContainerInterface
                 unset($this->services[$id]);
             }
 
+            $this->dispatchEvent(Event\AfterServiceResolved::class, $id, $isFactory, $resolved);
+
             return $resolved;
         }
 
         foreach ($this->containers as $container) {
             if ($container->has($id)) {
-                $service = $container->get($id);
+                $this->dispatchEvent(Event\BeforeServiceResolved::class, $id, null);
 
-                return $this->resolveExtensions($id, $service);
+                $resolved = $this->resolveExtensions($id, $container->get($id));
+
+                $this->dispatchEvent(Event\AfterServiceResolved::class, $id, null, $resolved);
+
+                return $resolved;
             }
         }
 
-        throw new class ("Service with ID {$id} not found.")
+        $error = new class ("Service with ID {$id} not found.")
             extends \Exception
             implements NotFoundExceptionInterface {
         };
+
+        /** @var Event\ServiceNotResolved $event */
+        $event = $this->dispatchEvent(Event\ServiceNotResolved::class, $id, null, $error);
+        if (!$event->hasService()) {
+            throw $error;
+        }
+
+        $resolved = $event->service();
+        $this->resolvedServices[$id] = $resolved;
+
+        return $resolved;
     }
 
     /**
@@ -138,5 +166,54 @@ class ReadOnlyContainer implements ContainerInterface
         }
 
         return $service;
+    }
+
+    /**
+     * @param class-string<Event\ServiceEvent> $class
+     * @param string $serviceId
+     * @param bool|null $isFactory
+     * @param mixed $serviceOrError
+     * @return Event\ServiceEvent
+     */
+    private function dispatchEvent(
+        string $class,
+        string $serviceId,
+        ?bool $isFactory,
+        $serviceOrError = null
+    ): Event\ServiceEvent {
+
+        if ($class === Event\ServiceNotResolved::class) {
+            /** @var \Throwable $serviceOrError */
+            $event = new Event\ServiceNotResolved($serviceOrError, $serviceId, $this);
+            $this->dispatcher->dispatch($event);
+
+            return $event;
+        }
+
+        switch (true) {
+            case ($isFactory === true):
+                $type = ($class === Event\BeforeServiceResolved::class)
+                    ? Event\ServiceEvent::BEFORE_RESOLVED_FACTORY
+                    : Event\ServiceEvent::AFTER_RESOLVED_FACTORY;
+                break;
+            case ($isFactory === null):
+                $type = ($class === Event\BeforeServiceResolved::class)
+                    ? Event\ServiceEvent::BEFORE_RESOLVED_EXTERNAL
+                    : Event\ServiceEvent::AFTER_RESOLVED_EXTERNAL;
+                break;
+            default:
+                $type = ($class === Event\BeforeServiceResolved::class)
+                    ? Event\ServiceEvent::BEFORE_RESOLVED
+                    : Event\ServiceEvent::AFTER_RESOLVED;
+                break;
+        }
+
+        $event = ($class === Event\BeforeServiceResolved::class)
+            ? new Event\BeforeServiceResolved($type, $serviceId, $this)
+            : new Event\AfterServiceResolved($type, $serviceId, $serviceOrError, $this);
+
+        $this->dispatcher->dispatch($event);
+
+        return $event;
     }
 }

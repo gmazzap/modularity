@@ -29,7 +29,8 @@
     "require": {
         "php": ">=7.2",
         "ext-json": "*",
-        "psr/container": "~1.0"
+        "psr/container": "~1.0",
+        "psr/event-dispatcher": "~1.0"
     },
     "require-dev": {
         "brain/monkey": "^2.6.1",

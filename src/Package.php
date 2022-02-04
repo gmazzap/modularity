@@ -6,13 +6,16 @@ namespace Inpsyde\Modularity;
 
 use Inpsyde\Modularity\Container\ContainerConfigurator;
 use Inpsyde\Modularity\Container\PackageProxyContainer;
+use Inpsyde\Modularity\Event;
 use Inpsyde\Modularity\Module\ExtendingModule;
 use Inpsyde\Modularity\Module\ExecutableModule;
 use Inpsyde\Modularity\Module\FactoryModule;
+use Inpsyde\Modularity\Module\ListeningModule;
 use Inpsyde\Modularity\Module\Module;
 use Inpsyde\Modularity\Module\ServiceModule;
 use Inpsyde\Modularity\Properties\Properties;
 use Psr\Container\ContainerInterface;
+use Psr\EventDispatcher\ListenerProviderInterface;
 
 class Package
 {
@@ -97,6 +100,11 @@ class Package
     public const ACTION_FAILED_CONNECTION = 'failed-connection';
 
     /**
+     * Custom action which is triggered when a service is not registered because of listeners.
+     */
+    public const ACTION_SERVICE_NOT_REGISTERED = 'service-not-registered';
+
+    /**
      * Module states can be used to get information about your module.
      *
      * @example
@@ -171,6 +179,16 @@ class Package
     private $properties;
 
     /**
+     * @var Event\Dispatcher
+     */
+    private $eventDispatcher;
+
+    /**
+     * @var Event\ListeningModuleProvider|null
+     */
+    private $listeningModuleProvider = null;
+
+    /**
      * @var ContainerConfigurator
      */
     private $containerConfigurator;
@@ -193,8 +211,9 @@ class Package
     private function __construct(Properties $properties, ContainerInterface ...$containers)
     {
         $this->properties = $properties;
+        $this->eventDispatcher = new Event\Dispatcher();
 
-        $this->containerConfigurator = new ContainerConfigurator($containers);
+        $this->containerConfigurator = new ContainerConfigurator($containers, $this->eventDispatcher);
         $this->containerConfigurator->addService(
             self::PROPERTIES,
             static function () use ($properties) {
@@ -212,6 +231,8 @@ class Package
     public function addModule(Module $module): Package
     {
         $this->assertStatus(self::STATUS_IDLE, 'access Container');
+
+        $this->maybeAttachListenerProvider($module);
 
         $registeredServices = $this->addModuleServices($module, self::MODULE_REGISTERED);
         $registeredFactories = $this->addModuleServices($module, self::MODULE_REGISTERED_FACTORIES);
@@ -353,21 +374,27 @@ class Package
      */
     private function addModuleServices(Module $module, string $status): bool
     {
-        $services = null;
-        $addCallback = null;
         switch ($status) {
             case self::MODULE_REGISTERED:
                 $services = $module instanceof ServiceModule ? $module->services() : null;
                 $addCallback = [$this->containerConfigurator, 'addService'];
+                $isFactory = false;
+                $isExtension = false;
                 break;
             case self::MODULE_REGISTERED_FACTORIES:
                 $services = $module instanceof FactoryModule ? $module->factories() : null;
                 $addCallback = [$this->containerConfigurator, 'addFactory'];
+                $isFactory = true;
+                $isExtension = false;
                 break;
             case self::MODULE_EXTENDED:
                 $services = $module instanceof ExtendingModule ? $module->extensions() : null;
                 $addCallback = [$this->containerConfigurator, 'addExtension'];
+                $isFactory = false;
+                $isExtension = true;
                 break;
+            default:
+                return false;
         }
 
         if (!$services) {
@@ -377,11 +404,32 @@ class Package
         $ids = [];
         array_walk(
             $services,
-            static function (callable $service, string $id) use ($addCallback, &$ids) {
+            function (callable $service, string $id) use (
+                $addCallback,
+                &$ids,
+                $module,
+                $isFactory,
+                $isExtension
+            ) {
+                $moduleId = $module->id();
+                $isOverride = $this->containerConfigurator->hasService($id);
+                $eventArgs = [$id, $addCallback, $moduleId, $isFactory, $isExtension, $isOverride];
+
+                $eventBefore = $this->factoryEvent(Event\BeforeServiceAdded::class, ...$eventArgs);
+                $this->eventDispatcher->dispatch($eventBefore);
+                if (!$eventBefore->isServiceEnabled()) {
+                    do_action($this->hookName(self::ACTION_SERVICE_NOT_REGISTERED), $id, $moduleId);
+
+                    return;
+                }
+
                 /** @var callable(string, callable) $addCallback */
                 $addCallback($id, $service);
                 /** @var list<string> $ids */
                 $ids[] = $id;
+
+                $afterEvent = $this->factoryEvent(Event\AfterServiceAdded::class, ...$eventArgs);
+                $this->eventDispatcher->dispatch($afterEvent);
             }
         );
         /** @var list<string> $ids */
@@ -551,5 +599,77 @@ class Package
         if (!version_compare((string) $this->status, (string) $status, $operator)) {
             throw new \Exception(sprintf("Can't %s at this point of application.", $action));
         }
+    }
+
+    /**
+     * @param Module $module
+     * @return void
+     */
+    private function maybeAttachListenerProvider(Module $module): void
+    {
+        if ($module instanceof ListenerProviderInterface) {
+            $this->eventDispatcher->attachProvider($module);
+        }
+
+        if ($module instanceof ListeningModule) {
+            if (!$this->listeningModuleProvider) {
+                $this->listeningModuleProvider = new Event\ListeningModuleProvider();
+                $this->eventDispatcher->attachProvider($this->listeningModuleProvider);
+            }
+            $this->listeningModuleProvider->addModule($module);
+        }
+    }
+
+    /**
+     * @param class-string<Event\BeforeServiceAdded>|class-string<Event\AfterServiceAdded> $class
+     * @param string $serviceId
+     * @param callable $serviceFactory
+     * @param string $moduleId
+     * @param bool $isFactory
+     * @param bool $isExtension
+     * @param bool $isOverride
+     * @return ($class is class-string<Event\BeforeServiceAdded>
+     *  ? Event\BeforeServiceAdded
+     *  : Event\AfterServiceAdded)
+     */
+    private function factoryEvent(
+        string $class,
+        string $serviceId,
+        callable $serviceFactory,
+        string $moduleId,
+        bool $isFactory,
+        bool $isExtension,
+        bool $isOverride
+    ): Event\ServiceEvent {
+
+        switch (true) {
+            case $isExtension:
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_EXTEND
+                    : Event\ServiceEvent::AFTER_EXTEND;
+                break;
+            case ($isFactory && $isOverride):
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_OVERRIDE_WITH_FACTORY
+                    : Event\ServiceEvent::AFTER_OVERRIDE_WITH_FACTORY;
+                break;
+            case $isFactory:
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_REGISTER_FACTORY
+                    : Event\ServiceEvent::AFTER_REGISTER_FACTORY;
+                break;
+            case $isOverride:
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_OVERRIDE
+                    : Event\ServiceEvent::AFTER_OVERRIDE;
+                break;
+            default:
+                $type = ($class === Event\BeforeServiceAdded::class)
+                    ? Event\ServiceEvent::BEFORE_REGISTER
+                    : Event\ServiceEvent::AFTER_REGISTER;
+                break;
+        }
+
+        return new $class($type, $serviceId, $serviceFactory, $moduleId, $this->properties);
     }
 }
