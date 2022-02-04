@@ -6,14 +6,24 @@ namespace Inpsyde\Modularity\Event;
 
 use Psr\Container\ContainerInterface;
 
-final class BeforeServiceResolved implements ServiceEvent
+final class ServiceNotResolved implements ServiceEvent
 {
     use StoppableTrait;
 
     /**
-     * @var string
+     * @var mixed
      */
-    private $type;
+    private $service = null;
+
+    /**
+     * @var bool
+     */
+    private $hasService = false;
+
+    /**
+     * @var \Throwable
+     */
+    private $error;
 
     /**
      * @var string
@@ -26,17 +36,17 @@ final class BeforeServiceResolved implements ServiceEvent
     private $container;
 
     /**
-     * @param string $type
+     * @param \Throwable $error
      * @param string $serviceId
      * @param ContainerInterface $container
      */
     public function __construct(
-        string $type,
+        \Throwable $error,
         string $serviceId,
         ContainerInterface $container
     ) {
 
-        $this->type = $type;
+        $this->error = $error;
         $this->serviceId = $serviceId;
         $this->container = $container;
     }
@@ -46,7 +56,7 @@ final class BeforeServiceResolved implements ServiceEvent
      */
     public function type(): string
     {
-        return $this->type;
+        return self::NOT_RESOLVED;
     }
 
     /**
@@ -63,5 +73,34 @@ final class BeforeServiceResolved implements ServiceEvent
     public function container(): ContainerInterface
     {
         return $this->container;
+    }
+
+
+    /**
+     * @param mixed $service
+     * @return void
+     */
+    public function recoverWithService($service): void
+    {
+        if ($service !== null) {
+            $this->service = $service;
+            $this->hasService = true;
+        }
+    }
+
+    /**
+     * @return bool
+     */
+    public function hasService(): bool
+    {
+        return $this->hasService;
+    }
+
+    /**
+     * @return mixed
+     */
+    public function service()
+    {
+        return $this->service;
     }
 }

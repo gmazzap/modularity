@@ -10,6 +10,7 @@ use Inpsyde\Modularity\Event\AfterServiceResolved;
 use Inpsyde\Modularity\Event\BeforeServiceAdded;
 use Inpsyde\Modularity\Event\BeforeServiceResolved;
 use Inpsyde\Modularity\Event\ServiceEvent;
+use Inpsyde\Modularity\Event\ServiceNotResolved;
 use Inpsyde\Modularity\Module\ExtendingModule;
 use Inpsyde\Modularity\Module\FactoryModule;
 use Inpsyde\Modularity\Module\ListeningModule;
@@ -686,6 +687,90 @@ class PackageTest extends TestCase
     }
 
     /**
+     * Test "service not resolved" listeners can provide a replacement for services not found.
+     *
+     * @test
+     */
+    public function testServiceNotFoundListenersCanRecoverNotFound(): void
+    {
+        $listener = new class implements ListeningModule
+        {
+            use ModuleClassNameIdTrait;
+
+            public function listeners(): iterable
+            {
+                return [
+                    static function (ServiceNotResolved $event): void {
+                        if (
+                            ($event->serviceId() === 'foo')
+                            && $event->container()->has('foo-alternative')
+                        ) {
+                            $event->recoverWithService($event->container()->get('foo-alternative'));
+                        }
+                    }
+                ];
+            }
+        };
+
+        $module = $this->mockModule('module', ServiceModule::class);
+        $module->expects('services')->andReturn($this->stubServices('foo-alternative'));
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->addModule($module)
+            ->addModule($listener);
+        $package->boot();
+
+        $foo = $package->container()->get('foo');
+
+        static::assertSame('foo-alternative', $foo['id']);
+    }
+
+    /**
+     * Test combining "service not resolved" with "before add" listeners we can replace services.
+     *
+     * @test
+     */
+    public function testServiceBeforeAddPlusNotFoundListenersCanReplaceServices(): void
+    {
+        $listener = new class implements ListeningModule
+        {
+            use ModuleClassNameIdTrait;
+
+            public function listeners(): iterable
+            {
+                return [
+                    static function (BeforeServiceAdded $event): void {
+                        if ($event->serviceId() === 'default-client') {
+                            $event->disableService();
+                        }
+                    },
+                    static function (ServiceNotResolved $event): void {
+                        if ($event->serviceId() === 'default-client') {
+                            $replacement = $event->container()->get('alternative-client');
+                            $event->recoverWithService($replacement);
+                        }
+                    }
+                ];
+            }
+        };
+
+        $module1 = $this->mockModule('module-default', ServiceModule::class);
+        $module1->expects('services')->andReturn($this->stubServices('default-client'));
+
+        $module2 = $this->mockModule('module-alternative', ServiceModule::class);
+        $module2->expects('services')->andReturn($this->stubServices('alternative-client'));
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->addModule($module2)
+            ->addModule($listener);
+        $package->boot($module1);
+
+        $foo = $package->container()->get('default-client');
+
+        static::assertSame('alternative-client', $foo['id']);
+    }
+
+    /**
      * Test "after register" listeners can be used to implement dependencies of modules on services.
      *
      * @test
@@ -879,6 +964,91 @@ class PackageTest extends TestCase
     }
 
     /**
+     * Test "before register" listener can intercept and optionally prevent service overrides.
+     *
+     * @test
+     */
+    public function testListenersCanInterceptServiceOverrides(): void
+    {
+        $listener = new class implements ListeningModule
+        {
+            use ModuleClassNameIdTrait;
+
+            public $collector = [];
+
+            public function listeners(): iterable
+            {
+                return [
+                    function (BeforeServiceAdded $event): void {
+                        if (
+                            ($event->type() === ServiceEvent::BEFORE_OVERRIDE)
+                            || ($event->type() === ServiceEvent::BEFORE_OVERRIDE_WITH_FACTORY)
+                        ) {
+                            $this->collector[] = sprintf(
+                                "Overriding service '%s' via module '%s'.",
+                                $event->serviceId(),
+                                $event->moduleId()
+                            );
+
+                            if ($event->serviceId() === 'c') {
+                                $event->disableService();
+                                $event->stop();
+                            }
+                        }
+                    }
+                ];
+            }
+        };
+
+        $module1 = $this->mockModule('module-1', ServiceModule::class);
+        $module1->expects('services')->andReturn([
+            'a' => static function () {
+                return 'The original A service';
+            },
+            'b' => static function () {
+                return 'The original B service';
+            },
+            'c' => static function () {
+                return 'The original C service';
+            }
+        ]);
+
+        $module2 = $this->mockModule('module-2', ServiceModule::class);
+        $module2->expects('services')->andReturn([
+            'd' => static function () {
+                return 'The original D service';
+            },
+            'a' => static function () {
+                return 'The *replaced* A service';
+            },
+            'c' => static function () {
+                return 'The *replaced* C service';
+            }
+        ]);
+
+        $package = Package::new($this->mockProperties('test-package', false))
+            ->addModule($listener)
+            ->addModule($module1)
+            ->addModule($module2);
+
+        $package->boot();
+        $container = $package->container();
+
+        static::assertSame(
+            [
+                "Overriding service 'a' via module 'module-2'.",
+                "Overriding service 'c' via module 'module-2'.",
+            ],
+            $listener->collector
+        );
+
+        static::assertSame('The *replaced* A service', $container->get('a'));
+        static::assertSame('The original B service', $container->get('b'));
+        static::assertSame('The original C service', $container->get('c'));
+        static::assertSame('The original D service', $container->get('d'));
+    }
+
+    /**
      * Test each listener has the possibility to stop the rest of listeners for the same event.
      *
      * @test
@@ -909,14 +1079,14 @@ class PackageTest extends TestCase
                     },
                     function (BeforeServiceResolved $event): void {
                         $event->stop();
-                        $this->before .= 'c-';
-                    },
-                    function (AfterServiceResolved $event): void {
-                        $this->after .= '-';
-                        $event->stop();
+                        $this->before .= 'c-stop-';
                     },
                     function (BeforeServiceResolved $event): void {
                         $this->before .= 'd';
+                    },
+                    function (AfterServiceResolved $event): void {
+                        $this->after .= '-stop-';
+                        $event->stop();
                     },
                     function (BeforeServiceResolved $event): void {
                         $this->before .= 'e';
@@ -934,53 +1104,7 @@ class PackageTest extends TestCase
         $container->get('foo');
         $container->get('bar');
 
-        static::assertSame('abc-abc-', $listener->before);
-        static::assertSame('a-a-', $listener->after);
-    }
-
-    /**
-     * Test "before register" listener can intercept service overrides.
-     *
-     * @test
-     */
-    public function testListenersCanInterceptServiceOverrides(): void
-    {
-        $listener = new class implements ListeningModule
-        {
-            use ModuleClassNameIdTrait;
-
-            public $collector = '';
-
-            public function listeners(): iterable
-            {
-                return [
-                    function (BeforeServiceAdded $event): void {
-                        if ($event->type() === ServiceEvent::BEFORE_OVERRIDE) {
-                            $this->collector = sprintf(
-                                "Overriding service '%s' via module '%s'.",
-                                $event->serviceId(),
-                                $event->moduleId()
-                            );
-                        }
-                    }
-                ];
-            }
-        };
-
-        $module1 = $this->mockModule('module-1', ServiceModule::class);
-        $module1->expects('services')->andReturn($this->stubServices('a', 'b', 'c'));
-
-        $module2 = $this->mockModule('module-2', ServiceModule::class);
-        $module2->expects('services')->andReturn($this->stubServices('d', 'a', 'e'));
-
-        Package::new($this->mockProperties('test-package', false))
-            ->addModule($listener)
-            ->addModule($module1)
-            ->addModule($module2);
-
-        static::assertSame(
-            $listener->collector,
-            "Overriding service 'a' via module 'module-2'."
-        );
+        static::assertSame('abc-stop-abc-stop-', $listener->before);
+        static::assertSame('a-stop-a-stop-', $listener->after);
     }
 }

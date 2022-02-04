@@ -13,6 +13,11 @@ final class AfterServiceResolved implements ServiceEvent
     /**
      * @var string
      */
+    private $type;
+
+    /**
+     * @var string
+     */
     private $serviceId;
 
     /**
@@ -26,35 +31,22 @@ final class AfterServiceResolved implements ServiceEvent
     private $container;
 
     /**
-     * @var bool
-     */
-    private $isExternalContainer;
-
-    /**
-     * @var bool
-     */
-    private $isFactory;
-
-    /**
+     * @param string $type
      * @param string $serviceId
      * @param mixed $service
      * @param ContainerInterface $container
-     * @param bool $isExternalContainer
-     * @param bool $isFactory
      */
     public function __construct(
+        string $type,
         string $serviceId,
         $service,
-        ContainerInterface $container,
-        bool $isExternalContainer,
-        bool $isFactory
+        ContainerInterface $container
     ) {
 
+        $this->type = $type;
         $this->serviceId = $serviceId;
         $this->service = $service;
         $this->container = $container;
-        $this->isExternalContainer = $isExternalContainer;
-        $this->isFactory = $isFactory;
     }
 
     /**
@@ -62,7 +54,7 @@ final class AfterServiceResolved implements ServiceEvent
      */
     public function type(): string
     {
-        return self::AFTER_RESOLVED;
+        return $this->type;
     }
 
     /**
@@ -87,21 +79,5 @@ final class AfterServiceResolved implements ServiceEvent
     public function container(): ContainerInterface
     {
         return $this->container;
-    }
-
-    /**
-     * @return bool
-     */
-    public function isExternalContainer(): bool
-    {
-        return $this->isExternalContainer;
-    }
-
-    /**
-     * @return bool
-     */
-    public function isFactory(): bool
-    {
-        return $this->isFactory;
     }
 }
